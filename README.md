@@ -1,5 +1,4 @@
 # GmailHelper
-<<<<<<< HEAD
 
 A small Python utility that automates handling invoice emails:
 
@@ -27,5 +26,3 @@ A small Python utility that automates handling invoice emails:
 - Secrets (Gmail credentials, tokens, rclone config) are **not** stored in the repo.  
 - They are provided through GitHub Actions Secrets.  
 - This repo is for demonstration and learning purposes.
-=======
->>>>>>> 0b8b601 (initial commit)
