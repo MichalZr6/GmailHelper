@@ -2,7 +2,7 @@ name: Gmail Invoices
 
 on:
   schedule:
-    - cron: "*/30 7-23 * * *"
+    - cron: "*/30 7-23 * * *"   # every 30 min, 07:00–23:00
   workflow_dispatch:
 
 jobs:
@@ -17,6 +17,14 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install rclone
         run: |
           sudo apt-get update
@@ -25,24 +33,19 @@ jobs:
       - name: Restore credentials/secrets
         run: |
           mkdir -p ~/.config/rclone
-          echo '${{ secrets.RCLONE_CONF }}' > ~/.config/rclone/rclone.conf
-          echo '${{ secrets.GMAIL_CREDENTIALS_JSON }}' > gmail_credentials.json
-          echo '${{ secrets.GMAIL_TOKEN_JSON }}' > token.json
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          echo "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+          echo "${{ secrets.GMAIL_CREDENTIALS_JSON }}" > gmail_credentials.json
+          echo "${{ secrets.GMAIL_TOKEN_JSON }}" > token.json
 
-      - name: Smoke test rclone (optional)
-        run: |
-            mkdir -p ~/.config/rclone
-            echo "${{ secrets.RCLONE_CONF_B64 }}" | base64 -d > ~/.config/rclone/rclone.conf
-
-      - name: Install deps
+      - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib pydantic openai
+          pip install -r requirements.txt
+
+      - name: Smoke test rclone (optional)
+        run: rclone lsf onedrive:
 
       - name: Run GmailHelper
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          python -u GmailHelper.py
+        run: python -u GmailHelper.py
