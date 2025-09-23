@@ -163,6 +163,9 @@ def label_modify(service, msg_id: str, to_add: List[str], to_remove: List[str]):
 
 
 def main() -> None:
+	
+	print(">>> GmailHelper starting")
+
 	svc = auth_gmail()
 	lbs = resolve_labels(svc)
 
@@ -172,7 +175,7 @@ def main() -> None:
 	).execute().get("messages", [])
 
 	if not msgs:
-		print("No messages there...")
+		print("No unread emails to process...")
 
 	for m in msgs:
 		msg = load_message(svc, m['id'])
