@@ -163,8 +163,8 @@ def label_modify(service, msg_id: str, to_add: List[str], to_remove: List[str]):
 
 
 def main() -> None:
-	
-	print(">>> GmailHelper starting")
+
+	print(">>> GmailHelper starting", True)
 
 	svc = auth_gmail()
 	lbs = resolve_labels(svc)
@@ -175,7 +175,7 @@ def main() -> None:
 	).execute().get("messages", [])
 
 	if not msgs:
-		print("No unread emails to process...")
+		print("No unread emails to process...", True)
 
 	for m in msgs:
 		msg = load_message(svc, m['id'])
@@ -196,12 +196,12 @@ def main() -> None:
 					subj, snippet, from_header, [fn for fn, _ in atts]
 				)
 			except Exception as exc:
-				print(f"AI classification error: {exc}")
+				print(f"AI classification error: {exc}", True)
 
 		if not is_invoice:
 			continue
 
-		print(f"E-mail from {from_header} with subject: {subj} classified as invoice.")
+		print(f"E-mail from {from_header} with subject: {subj} classified as invoice.", True)
 
 		uploaded = []
 		for fn, data in atts:
@@ -215,7 +215,7 @@ def main() -> None:
 				uploaded.append(out_name)
 				saved_any = True
 			except Exception as exc:
-				print(f"Attachment handling error: {exc}")
+				print(f"Attachment handling error: {exc}", True)
 				continue
 
 		if saved_any:
@@ -223,7 +223,7 @@ def main() -> None:
 			to_add = [lbs.processed]
 			to_remove = [lbs.incoming]
 			label_modify(svc, m['id'], to_add, to_remove)
-			print(f"[OK] {subj!r} → {', '.join(uploaded)}")
+			print(f"[OK] {subj!r} → {', '.join(uploaded)}", True)
 
 
 if __name__ == "__main__":
