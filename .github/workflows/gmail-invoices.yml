@@ -2,7 +2,7 @@ name: Gmail Invoices
 
 on:
   schedule:
-    - cron: "*/30 7-23 * * *"   # every 30 min, 07:00–23:00
+    - cron: "0 7-23 * * *"   # every 60 min, 07:00–23:00
   workflow_dispatch:
 
 jobs:
@@ -48,4 +48,6 @@ jobs:
       - name: Run GmailHelper
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GMAIL_REPORT_TO: ${{ secrets.GMAIL_REPORT_TO }}
+          PYTHONUNBUFFERED: "1"
         run: python -u GmailHelper.py

@@ -1,12 +1,18 @@
-import os, re, base64, json, pathlib, time
-from typing import List, Optional, Tuple
-from dataclasses import dataclass
+import os
+import re
+import sys
+import base64
 import subprocess
+from email.mime.text import MIMEText
+from typing import List, Tuple
+from dataclasses import dataclass
 from openai import OpenAI
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
@@ -136,12 +142,21 @@ def sanitize_filename(name: str) -> str:
 	return (root or "file") + (ext or ".dat")
 
 
-def upload_bytes_to_onedrive(file_bytes: bytes) -> None:
+def send_email_report(gmail_service, to_addr: str, subject: str, body: str) -> None:
+	msg = MIMEText(body)
+	msg['To'] = to_addr
+	msg['From'] = 'me'
+	msg['Subject'] = subject
+	raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+	gmail_service.users().messages().send(userId='me', body={'raw': raw}).execute()
+
+
+def upload_bytes_to_onedrive(file_bytes: bytes, out_name: str) -> None:
 	"""Upload raw bytes to OneDrive via rclone rcat."""
 
 	try:
 		proc = subprocess.Popen(
-			["rclone", "rcat", "onedrive:Faktury/do_obrobienia"],
+			["rclone", "rcat", f"onedrive:Faktury/do_obrobienia/{out_name}"],
 			stdin=subprocess.PIPE,
 		)
 		proc.communicate(file_bytes)
@@ -162,11 +177,11 @@ def label_modify(service, msg_id: str, to_add: List[str], to_remove: List[str]):
 	service.users().messages().modify(userId="me", id=msg_id, body=body).execute()
 
 
-def main() -> None:
+def get_my_email(service):
+	return service.users().getProfile(userId="me").execute()["emailAddress"]
 
-	print(">>> GmailHelper starting", True)
 
-	svc = auth_gmail()
+def main(svc) -> None:
 	lbs = resolve_labels(svc)
 
 	msgs = svc.users().messages().list(
@@ -175,13 +190,22 @@ def main() -> None:
 	).execute().get("messages", [])
 
 	if not msgs:
-		print("No unread emails to process...", True)
+		to_addr = get_my_email(svc)
+		if to_addr:
+			send_email_report(svc, to_addr, "GmailHelper: seems like no invoices right now",
+			"No unread emails matched at this run.")
+		return
 
+	report = []
+	invoices = 0
 	for m in msgs:
 		msg = load_message(svc, m['id'])
 		subj = get_header(msg, "Subject")
 		from_header = get_header(msg, "From")
 		snippet = msg.get("snippet", "")
+
+		report.append(f"Processing potential invoice e-mail from {from_header} with subject: \
+						{subj}.")
 
 		atts = iter_attachments(svc, msg)
 		saved_any = False
@@ -196,14 +220,14 @@ def main() -> None:
 					subj, snippet, from_header, [fn for fn, _ in atts]
 				)
 			except Exception as exc:
-				print(f"AI classification error: {exc}", True)
+				report.append(f"AI classification error: {exc}")
 
 		if not is_invoice:
 			continue
 
-		print(f"E-mail from {from_header} with subject: {subj} classified as invoice.", True)
+		invoices += 1
+		report.append("E-mail classified as invoice.")
 
-		uploaded = []
 		for fn, data in atts:
 			try:
 				if not fn.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
@@ -212,19 +236,42 @@ def main() -> None:
 				out_name = sanitize_filename(fn or "attachment")
 
 				upload_bytes_to_onedrive(data, out_name)
-				uploaded.append(out_name)
+				report.append(f"File {out_name} has been successfully uploaded to OneDrive")
 				saved_any = True
 			except Exception as exc:
-				print(f"Attachment handling error: {exc}", True)
+				report.append(f"Attachment handling error: {exc}")
 				continue
+
+		report.append("\n\n")
 
 		if saved_any:
 			mark_read(svc, m['id'])
 			to_add = [lbs.processed]
 			to_remove = [lbs.incoming]
 			label_modify(svc, m['id'], to_add, to_remove)
-			print(f"[OK] {subj!r} → {', '.join(uploaded)}", True)
+
+	if report:
+		# --- email report ---
+		to_addr = get_my_email(svc)
+		if to_addr:
+			body = "\n".join(report)
+			subject = f"GmailHelper report - processed: {len(msgs)}, invoice(s): {invoices}"
+			send_email_report(svc, to_addr, subject, body)
 
 
 if __name__ == "__main__":
-	main()
+	now_pl = datetime.now(ZoneInfo("Europe/Warsaw"))
+	if (7 <= now_pl.hour < 23):
+		service = auth_gmail()
+		try:
+			main(service)
+		except Exception as e:
+			to_addr = get_my_email(service)
+			try:
+				send_email_report(service, to_addr or 'me', "GmailHelper: FATALity",
+									f"{type(e).__name__}: {e}")
+			except Exception:
+				pass
+			raise
+	else:
+		sys.exit(0)
