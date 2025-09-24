@@ -1,13 +1,19 @@
 name: Gmail Invoices
 
 on:
+  push:
+    branches:
+      - main
   schedule:
-    - cron: "0 7-23 * * *"   # every 60 min, 07:00–23:00
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    env:
+      RCLONE_BIN_VERSION: "v1.67.0"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,29 +31,53 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Install rclone
+      - name: Cache rclone
+        id: cache-rclone
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin
+          key: rclone-${{ runner.os }}-${{ env.RCLONE_BIN_VERSION }}
+
+      - name: Install rclone (if missing)
+        if: steps.cache-rclone.outputs.cache-hit != 'true'
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y rclone
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://downloads.rclone.org/${RCLONE_BIN_VERSION}/rclone-${RCLONE_BIN_VERSION}-linux-amd64.zip" -o /tmp/rclone.zip
+          unzip -j /tmp/rclone.zip "rclone-*/rclone" -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/rclone"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Restore credentials/secrets
+        shell: bash
         run: |
-          mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
-          echo "${{ secrets.GMAIL_CREDENTIALS_JSON }}" > gmail_credentials.json
-          echo "${{ secrets.GMAIL_TOKEN_JSON }}" > token.json
+          set -euo pipefail
+
+          # rclone (base64)
+          mkdir -p "$HOME/.config/rclone"
+          echo "${{ secrets.RCLONE_CONF_B64 }}" | base64 -d > "$HOME/.config/rclone/rclone.conf"
+          chmod 600 "$HOME/.config/rclone/rclone.conf"
+
+          # gmail (base64)
+          echo "${{ secrets.GMAIL_CREDENTIALS_JSON_B64 }}" | base64 -d > gmail_credentials.json
+          echo "${{ secrets.GMAIL_TOKEN_JSON_B64 }}"       | base64 -d > token.json
+          chmod 600 gmail_credentials.json token.json
 
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Smoke test rclone (optional)
-        run: rclone lsf onedrive:
+      - name: Smoke test rclone (silent)
+        shell: bash
+        continue-on-error: true
+        run: |
+          export RCLONE_CONFIG="$HOME/.config/rclone/rclone.conf"
+          rclone about "onedrive:" --log-level ERROR >/dev/null
 
       - name: Run GmailHelper
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GMAIL_REPORT_TO: ${{ secrets.GMAIL_REPORT_TO }}
           PYTHONUNBUFFERED: "1"
         run: python -u GmailHelper.py
