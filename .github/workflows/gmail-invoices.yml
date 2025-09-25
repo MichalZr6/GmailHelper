@@ -77,7 +77,10 @@ jobs:
           rclone about "onedrive:" --log-level ERROR >/dev/null
 
       - name: Run GmailHelper
+        shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PYTHONUNBUFFERED: "1"
-        run: python -u GmailHelper.py
+        run: |
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+          python -u GmailHelper.py
