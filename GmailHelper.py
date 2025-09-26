@@ -1,10 +1,12 @@
 import os
 import re
+import io
 import sys
 import json
 import base64
 import httpx
 import subprocess
+from pdfminer.high_level import extract_text as pdf_extract_text
 from email.mime.text import MIMEText
 from typing import List, Tuple
 from dataclasses import dataclass
@@ -21,13 +23,6 @@ SCOPES = [
 	"https://www.googleapis.com/auth/gmail.modify",
 	"https://www.googleapis.com/auth/gmail.send",  # needed for your email reports
 ]
-
-
-INVOICE_WORDS = ["invoice", "faktura", "proforma", "vat"]
-
-SENDER_HINTS = [r"faktura"]
-
-ATTACHMENT_HINTS = [r"invoice", r"faktura", r"proforma", r"rachunek"]
 
 
 @dataclass
@@ -56,20 +51,6 @@ def resolve_labels(service) -> LabelIds:
 	if not processed:
 		processed = get_label_id(service, "instim/faktury")
 	return LabelIds(incoming=inbox_id, processed=processed)
-
-
-def looks_like_invoice(subject: str, sender: str, filenames: List[str]) -> bool:
-	s = subject.lower()
-	if any(w in s for w in INVOICE_WORDS):
-		return True
-	snd = sender.lower()
-	if any(re.search(h, snd) for h in SENDER_HINTS):
-		return True
-	for fn in filenames:
-		lower = fn.lower()
-		if lower.endswith(".pdf") and any(re.search(h, lower) for h in ATTACHMENT_HINTS):
-			return True
-	return False
 
 
 def auth_gmail():
@@ -129,23 +110,62 @@ def make_openai_client():
 	return OpenAI(http_client=http_client)
 
 
-def ai_invoice_classify(subject, snippet, sender, filenames):
-	text = f"""
-Subject: {subject}
-From: {sender}
-Snippet: {snippet}
-Attachments: {", ".join(filenames)}
+def _extract_pdf_text_cap(pdf_bytes: bytes, max_chars: int = 2000) -> str:
+	"""
+	Extracts text from a PDF and trims to max_chars.
+	Keep it short to control token cost and latency.
+	"""
+	try:
+		text = pdf_extract_text(io.BytesIO(pdf_bytes)) or ""
+	except Exception:
+		text = ""
+	# collapse whitespace and cap length
+	text = " ".join(text.split())
+	return text[:max_chars]
 
-Is this email an invoice (YES/NO)?
-"""
+
+def classify_invoice(subject: str, sender: str, filename: str, snippet: str = "",
+					pdf_bytes: bytes | None = None) -> bool:
+	"""
+	Return True if the file is likely an invoice.
+	- Uses Polish instructions but forces a strict YES/NO output (English) for easy parsing.
+	- If pdf_bytes is provided, uses extracted text; otherwise uses
+		subject/snippet/filenames only.
+	"""
 	client = make_openai_client()
+
+	if pdf_bytes:
+		body = _extract_pdf_text_cap(pdf_bytes)
+		context = (
+			f"Temat: {subject}\n"
+			f"Nadawca: {sender}\n"
+			f"Załącznik: {filename}\n"
+			f"Fragment tekstu z załącznika (ucięty):\n{body}\n"
+		)
+	else:
+		context = (
+			f"Temat: {subject}\n"
+			f"Nadawca: {sender}\n"
+			f"Część treści maila: {snippet}\n"
+			f"Nazwa badanego pliku: {filename}\n"
+		)
+
+	prompt = (
+		"Jesteś asystentem klasyfikującym załączniki e-maili po polsku.\n"
+		"Czy załącznik jest FAKTURĄ do księgowania ?\n"
+		"Przeanalizuj treść i nazwę pliku, ale ignoruj stopki i linki marketingowe.\n\n"
+		f"{context}\n"
+		"ODPOWIEDZ DOKŁADNIE: YES lub NO."
+	)
+
 	resp = client.chat.completions.create(
 		model="gpt-4o-mini",
-		messages=[{"role": "user", "content": text}],
+		messages=[{"role": "user", "content": prompt}],
 		max_tokens=2,
-		temperature=0
+		temperature=0,
 	)
-	return resp.choices[0].message.content.strip().upper().startswith("Y")
+	ans = (resp.choices[0].message.content or "").strip().upper()
+	return ans.startswith("Y")
 
 
 def load_message(service, msg_id: str) -> dict:
@@ -237,10 +257,6 @@ def main(svc) -> None:
 	).execute().get("messages", [])
 
 	if not msgs:
-		to_addr = get_my_email(svc)
-		if to_addr:
-			send_email_report(svc, to_addr, "GmailHelper: seems like no invoices right now",
-			"No unread emails matched at this run.")
 		return
 
 	report = []
@@ -253,50 +269,38 @@ def main(svc) -> None:
 
 		report.append(f"Processing potential invoice e-mail from {from_header} with subject: \n{subj}.")
 
-		atts = iter_attachments(svc, msg)
-		saved_any = False
+		attachments = iter_attachments(svc, msg)
 
-		is_invoice = looks_like_invoice(subj, from_header, [fn for fn, _ in atts])
+		for att, data in attachments:
+			if att.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
+				try:
+					is_invoice = classify_invoice(subj, snippet, from_header, att)
+				except Exception as exc:
+					report.append(f"AI classification error: {exc}")
 
-		if not is_invoice and any(
-			fn.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")) for fn, _ in atts
-		):
+			if not is_invoice:
+				continue
+
+			invoices += 1
+			report.append(f"{att} is an invoice.")
+
 			try:
-				is_invoice = ai_invoice_classify(
-					subj, snippet, from_header, [fn for fn, _ in atts]
-				)
-			except Exception as exc:
-				report.append(f"AI classification error: {exc}")
-
-		if not is_invoice:
-			continue
-
-		invoices += 1
-		report.append("E-mail classified as invoice.")
-
-		for fn, data in atts:
-			try:
-				if not fn.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
-					continue
-
-				out_name = sanitize_filename(fn or "attachment")
+				out_name = sanitize_filename(att or "attachment")
 
 				upload_bytes_to_onedrive(data, out_name)
 				report.append(f"File {out_name} has been successfully uploaded to OneDrive")
-				saved_any = True
 			except Exception as exc:
 				report.append(f"Attachment handling error: {exc}")
 				continue
 
-		report.append("\n\n")
+			report.append("\n\n")
 
-		if saved_any:
 			mark_read(svc, m['id'])
 			to_add = [lbs.processed]
 			to_remove = [lbs.incoming]
 			label_modify(svc, m['id'], to_add, to_remove)
 
-	if report:
+	if invoices:
 		# --- email report ---
 		to_addr = get_my_email(svc)
 		if to_addr:
