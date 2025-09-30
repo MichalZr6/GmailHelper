@@ -35,6 +35,7 @@ def main(svc) -> None:
 		attachments = gmail.iter_attachments(svc, msg)
 
 		for att, data in attachments:
+			is_invoice = False
 			if att.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
 				try:
 					is_invoice = inv_classifier.classify_invoice(subj, snippet, from_header, att)
