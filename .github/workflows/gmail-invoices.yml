@@ -64,6 +64,11 @@ jobs:
           echo "${{ secrets.GMAIL_TOKEN_JSON_B64 }}"       | base64 -d > token.json
           chmod 600 gmail_credentials.json token.json
 
+      - name: Install OCR tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-pol poppler-utils
+
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip

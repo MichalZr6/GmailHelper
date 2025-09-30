@@ -9,6 +9,8 @@ import invoice_classifier as inv_classifier
 from storage import upload_bytes_to_onedrive
 from config import LABEL_PROCESSED, TZ_NAME, RUN_HOURS
 
+from ocr_utils import extract_text
+
 
 def main(svc) -> None:
 	lbs = gmail.resolve_labels(svc)
@@ -36,11 +38,24 @@ def main(svc) -> None:
 
 		for att, data in attachments:
 			is_invoice = False
+			text = ""
 			if att.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
 				try:
-					is_invoice = inv_classifier.classify_invoice(subj, snippet, from_header, att)
+					text = extract_text(att, data)  # OCR / pdftotext result
 				except Exception as exc:
-					report.append(f"AI classification error: {exc}")
+					report.append(f"OCR error for {att}:\n{exc}")
+					text = ""
+
+			try:
+				is_invoice = inv_classifier.classify_invoice(
+					subject=subj,
+					sender=from_header,
+					filename=att,
+					snippet=snippet,
+					attachment_text=text if text else None,
+				)
+			except Exception as exc:
+				report.append(f"AI classification error for {att}:\n{exc}")
 
 			if not is_invoice:
 				continue
